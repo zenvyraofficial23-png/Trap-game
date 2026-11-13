@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Trap Platformer</title>
+<style>
+  html, body { margin:0; height:100%; background:#111; overflow:hidden; touch-action:none; user-select:none; }
+  canvas { display:block; }
+  #info { position:fixed; top:8px; left:10px; color:#fff; font:16px sans-serif; }
+  #controls { position:fixed; bottom:20px; left:0; right:0; display:flex; justify-content:space-between; padding:0 20px; }
+  #lr { display:flex; gap:20px; }
+  #controls button { width:80px; height:80px; border:none; border-radius:50%; background:rgba(255,255,255,0.25); color:#fff; font-size:28px; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="info"></div>
+<div id="controls">
+  <div id="lr">
+    <button id="left">◀</button>
+    <button id="right">▶</button>
+  </div>
+  <button id="jump">▲</button>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const info = document.getElementById('info');
+
+function resize() { canvas.width = innerWidth; canvas.height = innerHeight; }
+addEventListener('resize', resize);
+resize();
+
+const TILE = 40, GRAVITY = 0.6, SPEED = 4, JUMP = -13;
+
+// # = wall | S = start | G = goal | ^ = spike
+// F = fake floor (looks solid, you fall through) | D = hidden trap (drops when you walk under)
+const levels = [
+  [
+    "##############################",
+    "#S                           #",
+    "#                            #",
+    "#          ###               #",
+    "#                            #",
+    "#   ^^^              ^^^  G  #",
+    "####################F#########",
+  ],
+  [
+    "##############################",
+    "#S         D        D        #",
+    "#                            #",
+    "#      ###        ###        #",
+    "#                            #",
+    "#  ^^^    ^^^   ^^^      G   #",
+    "##############################",
+  ],
+];
+
+let levelIndex = 0, deaths = 0;
+let tiles, traps, p;
+const input = { left: false, right: false, jump: false };
+
+function loadLevel(i) {
+  const raw = levels[i];
+  const W = Math.max(...raw.map(r => r.length));
+  tiles = raw.map(r => r.padEnd(W, '#').split(''));
+  traps = [];
+  let sc = 1, sr = 1;
+  tiles.forEach((row, r) => row.forEach((ch, c) => {
+    if (ch === 'S') { sc = c; sr = r; }
+    if (ch === 'D') traps.push({ x: c * TILE, y: r * TILE, vy: 0, active: false, landed: false });
+  }));
+  p = { x: sc * TILE + 5, y: sr * TILE, w: 30, h: 30, vx: 0, vy: 0, onGround: false };
+}
+
+function tileAt(x, y) {
+  const c = Math.floor(x / TILE), r = Math.floor(y / TILE);
+  if (r < 0) return '#';
+  if (r >= tiles.length) return ' ';
+  if (c < 0 || c >= tiles[r].length) return '#';
+  return tiles[r][c];
+}
+
+function touches(o, ch) {
+  return [[o.x, o.y], [o.x + o.w - 1, o.y], [o.x, o.y + o.h - 1], [o.x + o.w - 1, o.y + o.h - 1]]
+    .some(([x, y]) => tileAt(x, y) === ch);
+}
+
+function rectHit(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function die() {
+  deaths++;
+  loadLevel(levelIndex);
+}
+
+function update() {
+  // Horizontal movement
+  p.vx = 0;
+  if (input.left) p.vx = -SPEED;
+  if (input.right) p.vx = SPEED;
+  p.x += p.vx;
+  if (touches(p, '#')) p.x -= p.vx;
+
+  // Jump
+  if (input.jump && p.onGround) p.vy = JUMP;
+  input.jump = false;
+
+  // Gravity and vertical movement
+  p.vy = Math.min(p.vy + GRAVITY, 14);
+  p.y += p.vy;
+  p.onGround = false;
+  if (touches(p, '#')) {
+    if (p.vy > 0) p.onGround = true;
+    p.y -= p.vy;
+    p.vy = 0;
+  }
+
+  // Spikes or falling into the pit
+  if (touches(p, '^') || p.y > tiles.length * TILE) return die();
+
+  // Goal
+  if (touches(p, 'G')) {
+    levelIndex++;
+    if (levelIndex >= levels.length) {
+      alert('Game khatam! Deaths: ' + deaths);
+      levelIndex = 0;
+      deaths = 0;
+    }
+    loadLevel(levelIndex);
+    return;
+  }
+
+  // Hidden traps
+  for (const t of traps) {
+    if (!t.active && Math.abs(p.x + p.w / 2 - (t.x + TILE / 2)) < TILE && p.y > t.y) t.active = true;
+    if (t.active && !t.landed) {
+      t.vy += 0.5;
+      t.y += t.vy;
+      if (tileAt(t.x + TILE / 2, t.y + TILE) === '#') {
+        t.landed = true;
+        t.y = Math.floor(t.y / TILE) * TILE;
+        t.vy = 0;
+      }
+    }
+    if (t.active && rectHit(p, { x: t.x + 4, y: t.y + 4, w: TILE - 8, h: TILE - 8 })) return die();
+  }
+}
+
+function draw() {
+  ctx.fillStyle = '#222';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const mapW = tiles[0].length * TILE;
+  const mapH = tiles.length * TILE;
+  const camX = Math.max(0, Math.min(p.x - canvas.width / 2, mapW - canvas.width));
+  const offY = Math.max(0, canvas.height - mapH - 160);
+
+  ctx.save();
+  ctx.translate(-camX, offY);
+
+  tiles.forEach((row, r) => row.forEach((ch, c) => {
+    const x = c * TILE, y = r * TILE;
+    if (ch === '#' || ch === 'F') {
+      ctx.fillStyle = '#666';
+      ctx.fillRect(x, y, TILE, TILE);
+    } else if (ch === '^') {
+      ctx.fillStyle = '#e53935';
+      ctx.beginPath();
+      ctx.moveTo(x, y + TILE);
+      ctx.lineTo(x + TILE / 2, y);
+      ctx.lineTo(x + TILE, y + TILE);
+      ctx.fill();
+    } else if (ch === 'G') {
+      ctx.fillStyle = '#43a047';
+      ctx.fillRect(x + 8, y + 8, TILE - 16, TILE - 16);
+    }
+  }));
+
+  for (const t of traps) {
+    if (t.active) {
+      ctx.fillStyle = '#ff9800';
+      ctx.fillRect(t.x, t.y, TILE, TILE);
+    }
+  }
+
+  ctx.fillStyle = '#4fc3f7';
+  ctx.fillRect(p.x, p.y, p.w, p.h);
+  ctx.restore();
+}
+
+// Touch and mouse controls
+function hold(id, down, up) {
+  const el = document.getElementById(id);
+  const start = e => { e.preventDefault(); down(); };
+  const end = e => { e.preventDefault(); up(); };
+  el.addEventListener('touchstart', start, { passive: false });
+  el.addEventListener('touchend', end, { passive: false });
+  el.addEventListener('touchcancel', end, { passive: false });
+  el.addEventListener('mousedown', start);
+  el.addEventListener('mouseup', end);
+}
+hold('left', () => input.left = true, () => input.left = false);
+hold('right', () => input.right = true, () => input.right = false);
+hold('jump', () => input.jump = true, () => {});
+
+// Keyboard (for testing on PC)
+addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft') input.left = true;
+  if (e.key === 'ArrowRight') input.right = true;
+  if (e.key === ' ' || e.key === 'ArrowUp') input.jump = true;
+});
+addEventListener('keyup', e => {
+  if (e.key === 'ArrowLeft') input.left = false;
+  if (e.key === 'ArrowRight') input.right = false;
+});
+
+// Game loop
+loadLevel(levelIndex);
+function loop() {
+  update();
+  draw();
+  info.textContent = `Level ${levelIndex + 1}/${levels.length}  |  Deaths: ${deaths}`;
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
